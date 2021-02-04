@@ -12,6 +12,7 @@ import torch.nn.functional as F
 #%matplotlib inline
 from matplotlib import pyplot as plt
 import random
+import pickle
 
 
 #↓ボトルネックデータの中でデータ区分してpathを辞書に入れておく
@@ -56,38 +57,11 @@ def mk_data_dict(train,basepath):
                     sys.exit(1)
             
             o+=1
-            if o==10:
+            if o%10==0:
+                print(o,"making dict...")
                 break
 
     return data_dict
-
-
-class LSTM_Net(nn.Module):
-    def __init__(self,input_size,hidden_size,output_size,seq_size):
-        super(LSTM_Net,self).__init__()
-        self.input_size=input_size
-        self.hidden_size=hidden_size
-        self.output_size=output_size
-        self.seq_size=seq_size
-
-        self.lstm=nn.LSTM(input_size,hidden_size,batch_first=True)
-        self.fc=nn.Linear(hidden_size,output_size)
-
-    
-    def forward(self,x,batchsize):
-        h0=torch.zeros(batchsize,self.seq_size,self.hidden_size).permute(1, 0, 2)
-        c0=torch.zeros(batchsize,self.seq_size,self.hidden_size).permute(1, 0, 2)
-        output,(h_n,c_n)=self.lstm(x,(h0,c0))
-        #↓全結合層は引数で指定したtのところだけ取り出す
-        out=torch.tensor([])
-        for h_t in h_n:
-            out=torch.cat((out,self.fc(h_t)),0)
-
-        return out
-
-class Attention_for_exam(nn.Module):
-    def __init__(self):
-        pass
 
 
 #↓各Seriesの中から一定長のテンソルを抽出する(バッチ内で長さを揃えるため)
@@ -151,6 +125,8 @@ def data_batch(data_dict,seq_size):
         batch_size[category]=series_index
 
     inte=0
+
+    #####↓データをテンソル化#####
     for a,b,c in zip(train_Xy_l,val_Xy_l,test_Xy_l):
         train_Xy_l[inte]=torch.tensor(a)
         val_Xy_l[inte]=torch.tensor(b)
@@ -162,54 +138,154 @@ def data_batch(data_dict,seq_size):
     return train_Xy_l,val_Xy_l,test_Xy_l,batch_size
             
 
+class LSTM_Net(nn.Module):
+    def __init__(self,input_size,hidden_size,output_size,seq_size):
+        super(LSTM_Net,self).__init__()
+        self.input_size=input_size
+        self.hidden_size=hidden_size
+        self.output_size=output_size
+        self.seq_size=seq_size
+
+        self.lstm=nn.LSTM(input_size,hidden_size,batch_first=True)
+        self.fc=nn.Linear(hidden_size,output_size)
+
+    
+    def forward(self,x,batchsize):
+        h0=torch.zeros(batchsize,self.seq_size,self.hidden_size).permute(1, 0, 2)
+        c0=torch.zeros(batchsize,self.seq_size,self.hidden_size).permute(1, 0, 2)
+        output,(h_n,c_n)=self.lstm(x,(h0,c0))
+        #↓全結合層は引数で指定したtのところだけ取り出す
+        out=torch.tensor([])
+        for h_t in h_n:
+            out=torch.cat((out,self.fc(h_t)),0)
+
+        return out
+
+
+class LSTMCell_Net(nn.Module):
+    def __init__(self,input_size,hidden_size,output_size):
+        super(LSTMCell_Net,self).__init__()
+        self.input_size=input_size
+        self.hidden_size=hidden_size
+        self.output_size=output_size
+
+        self.block_a=nn.LSTMCell(input_size,hidden_size)
+        self.block_b=nn.LSTMCell(hidden_size,hidden_size)
+        self.block_c=nn.Linear(hidden_size,output_size)
+
+    def forward(self,x,hx_a0,cx_a0,hx_b0,cx_b0):
+        hx_a1,cx_a1=self.block_a(x,(hx_a0,cx_a0))
+        hx_b1,cx_b1=self.block_b(hx_a1,(hx_b0,cx_b0))
+        out=self.block_c(hx_b1)
+
+        return hx_a1,cx_a1,hx_b1,cx_b1,out
+
+
+class Attention_for_exam(nn.Module):
+    def __init__(self):
+        pass
+
+
 def main():
     basepath="/home/fmhc006/kaggle_RSNA/bottleneck"
     train_=pd.read_csv("/home/mshirota/kaggle/RSNA-STR/train.csv")
 
-    data_dict=mk_data_dict(train_,basepath)
+    try:
+        #####binaryfileには"""付けないといけない#####
+        with open("dict_file9090.binaryfile","rb") as f:
+            data_dict=pickle.load(f)
+        print("dictを再利用")
+    except:
+        data_dict=mk_data_dict(train_,basepath)
+        with open("dict_file9090.binaryfile","wb") as f:
+            pickle.dump(data_dict,f)
+        print("dictを新たに保存")
+
     print(data_dict)
 
     hidden_size=5
     input_size=2048
     output_size=1
-    seq_size=1
+    seq_size=10
     
-    net=LSTM_Net(input_size,hidden_size,output_size,seq_size)
+#######################################################################################
 
-    criterion=nn.CrossEntropyLoss()
-    #####↓SGDはstep()がない？？？#####
-    optimizer=optim.Adam(net.parameters(),lr=0.01)
+    if args.lstm1:
+        net=LSTM_Net(input_size,hidden_size,output_size,seq_size)
 
-    num_epochs=10
-    train_loss_list=[]
-    train_acc_list=[]
-    val_loss_list=[]
-    val_acc_list=[]
+        criterion=nn.CrossEntropyLoss()
+        #####↓SGDはstep()がない？？？#####
+        optimizer=optim.Adam(net.parameters(),lr=0.01)
 
-    for epoch in range(num_epochs):
-        #↓データをinputできる形に
-        train,val,test,batch_size=data_batch(data_dict,seq_size)
+        num_epochs=10
+        train_loss_list=[]
+        train_acc_list=[]
+        val_loss_list=[]
+        val_acc_list=[]
 
-        train_loss=0
-        train_acc=0
-        val_loss=0
-        val_acc=0
+        for epoch in range(num_epochs):
+            #↓データをinputできる形に
+            train,val,test,batch_size=data_batch(data_dict,seq_size)
 
-        net.train()
-        print(train[0].shape)
-        #####↓ちゃんと変更するときに、元の値に代入しないといけない######
-        #train[1]=train[1].squeeze(1)
+            train_loss=0
+            train_acc=0
+            val_loss=0
+            val_acc=0
+
+            net.train()
+            print(train[0].shape)
+            """
+            #####↓ちゃんと変更するときに、元の値に代入しないといけない######
+            train[1]=train[1].squeeze(1)
+            """
+            optimizer.zero_grad()
+            outputs=net(train[0],batch_size["train"])
+            count=0
+
+            #↓RNNの全tにおけるlossを合計したい
+            print(train[1])
+            print(torch.t(train[1]))
+            for label in torch.t(train[1]):
+                print(outputs[count,:],label)
+                try:
+                    loss+=criterion(outputs,label)
+                except:
+                    loss=criterion(outputs,label)
+                count+=1
+            
+            train_loss+=loss.item()
+            #####↓backwardするときに計算結果消さないようにするretain_graph=True#####
+            loss.backward(retain_graph=True)
+            optimizer.step()
+
+            avg_train_loss=train_loss/len(train)
+            print('Epoch[{}/{}],Loss:{loss:.4f},Perplexity:{perp:5.2f}'.format(epoch+1,num_epochs,loss=avg_train_loss,perp=np.exp(avg_train_loss)))
+
+#######################################################################################
+
+    if args.lstm2:
+        net=LSTMCell_Net(input_size,hidden_size,output_size)
+
+        for epoch in range(num_epochs):
+            #↓データをinputできる形に
+            train,val,test,batch_size=data_batch(data_dict,seq_size)
         
-        optimizer.zero_grad()
-        outputs=net(train[0],batch_size["train"])
-        loss=criterion(outputs,train[1])
-        train_loss+=loss.item()
-        loss.backward()
-        optimizer.step()
+            #↓中間層初期化
+            hx_a0=torch.randn(batch_size,hidden_size)
+            cx_a0=torch.randn(batch_size,hidden_size)
+            hx_b0=torch.randn(batch_size,hidden_size)
+            cx_b0=torch.randn(batch_size,hidden_size)
 
-        avg_train_loss=train_loss/len(train)
-        print('Epoch[{}/{}],Loss:{loss:.4f},Perplexity:{perp:5.2f}'.format(epoch+1,num_epochs,loss=avg_train_loss,perp=np.exp(avg_train_loss)))
-        
+            for i in range(seq_size):
+                hx_a,cx_a,hx_b,cx_b,out=net(train[0][:,i,:],hx_a0,cx_a0,hx_b0,cx_b0)
+
+#######################################################################################    
         
 if __name__=="__main__":
+    #####↓ArgumentParserは()付けないとエラー起きる!!!######
+    parser=ArgumentParser()
+    parser.add_argument('-1','--lstm1',help="Use nn.LSTM",action="store_true")
+    parser.add_argument('-2','--lstm2',help="Use nn.LSTMCell",action="store_true")
+    args=parser.parse_args()
+
     main()
